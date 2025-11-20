@@ -1,0 +1,2 @@
+Repo: https://github.com/anhtri2407/ComputaionalThinking_Lab_W06
+Demo: https://labw06-34602424-22c8e.web.app/

@@ -6,8 +6,12 @@ import './App.css';
 function App() {
   const [location, setLocation] = useState(null);
   const [pois, setPois] = useState([]);
+  const [weather, setWeather] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  
+  // Replace with your OpenWeather API key
+  const OPENWEATHER_API_KEY = '9f817d37e5b3fccebbcaf858754f7f19';
 
   const handleLocationSearch = async (locationName) => {
     setLoading(true);
@@ -29,13 +33,20 @@ function App() {
       const { lat, lon, display_name } = geocodeData[0];
       const coords = [parseFloat(lat), parseFloat(lon)];
       
+      // Extract the main city name from the search or display_name
+      const cityName = locationName || display_name.split(',')[0];
+      
       setLocation({
         coordinates: coords,
-        name: display_name
+        name: display_name,
+        searchedCity: cityName
       });
       
-      // Search for points of interest nearby using Overpass API
-      await fetchPointsOfInterest(lat, lon);
+      // Fetch weather data and points of interest in parallel
+      await Promise.all([
+        fetchPointsOfInterest(lat, lon),
+        fetchWeatherData(lat, lon, cityName)
+      ]);
       
     } catch (err) {
       setError('Failed to fetch location data. Please try again.');
@@ -45,28 +56,44 @@ function App() {
     }
   };
 
-  const fetchPointsOfInterest = async (lat, lon) => {
+  const fetchPointsOfInterest = async (lat, lon, retryCount = 0) => {
     try {
       // Use Overpass API to get points of interest
-      // Search within 2km radius
-      const radius = 2000;
+      // Search within 3km radius for better results
+      const radius = 3000;
       const query = `
-        [out:json];
+        [out:json][timeout:25];
         (
           node["tourism"](around:${radius},${lat},${lon});
           node["amenity"="restaurant"](around:${radius},${lat},${lon});
           node["amenity"="cafe"](around:${radius},${lat},${lon});
           node["historic"](around:${radius},${lat},${lon});
           node["leisure"](around:${radius},${lat},${lon});
+          node["shop"="mall"](around:${radius},${lat},${lon});
+          node["amenity"="place_of_worship"](around:${radius},${lat},${lon});
         );
-        out body 10;
+        out body 15;
       `;
       
       const overpassUrl = 'https://overpass-api.de/api/interpreter';
       const response = await fetch(overpassUrl, {
         method: 'POST',
-        body: query
+        body: query,
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded'
+        }
       });
+      
+      if (!response.ok) {
+        console.warn('Overpass API error:', response.status, response.statusText);
+        throw new Error(`Overpass API returned ${response.status}`);
+      }
+      
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('application/json')) {
+        console.warn('Overpass API returned non-JSON response');
+        throw new Error('Invalid response from Overpass API');
+      }
       
       const data = await response.json();
       
@@ -101,11 +128,59 @@ function App() {
         setPois(poisData.slice(0, 5)); // Limit to 5 POIs
       } else {
         setPois([]);
-        setError('No points of interest found nearby. Try a different location.');
+        console.warn('No POIs found in the response');
       }
     } catch (err) {
       console.error('Error fetching POIs:', err);
-      setError('Failed to fetch points of interest.');
+      
+      // Retry once after a short delay
+      if (retryCount < 1) {
+        console.log('Retrying POI fetch...');
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        return fetchPointsOfInterest(lat, lon, retryCount + 1);
+      }
+      
+      setPois([]);
+      // Don't set error message for POI failures, as weather still works
+      console.warn('Could not fetch points of interest. The Overpass API may be temporarily unavailable.');
+    }
+  };
+
+  const fetchWeatherData = async (lat, lon, cityName) => {
+    try {
+      if (!OPENWEATHER_API_KEY || OPENWEATHER_API_KEY === 'YOUR_API_KEY_HERE') {
+        console.warn('OpenWeather API key not configured');
+        setWeather(null);
+        return;
+      }
+      
+      const weatherUrl = `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&units=metric&appid=${OPENWEATHER_API_KEY}`;
+      
+      const response = await fetch(weatherUrl);
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error('Weather API error:', errorData);
+        throw new Error(`Weather data not available: ${errorData.message || response.statusText}`);
+      }
+      
+      const data = await response.json();
+      
+      setWeather({
+        temp: Math.round(data.main.temp),
+        feelsLike: Math.round(data.main.feels_like),
+        description: data.weather[0].description,
+        icon: data.weather[0].icon,
+        humidity: data.main.humidity,
+        windSpeed: data.wind.speed,
+        pressure: data.main.pressure,
+        tempMin: Math.round(data.main.temp_min),
+        tempMax: Math.round(data.main.temp_max),
+        city: cityName || data.name  // Use the searched city name instead of API's name
+      });
+    } catch (err) {
+      console.error('Error fetching weather:', err);
+      setWeather(null);
     }
   };
 
@@ -131,9 +206,60 @@ function App() {
         {location && (
           <div className="location-info">
             <h3>📍 Location: {location.name}</h3>
-            {pois.length > 0 && (
+            {pois.length > 0 ? (
               <p>{pois.length} point(s) of interest found nearby</p>
-            )}
+            ) : loading ? (
+              <p style={{ color: '#2196f3', fontSize: '13px' }}>
+                🔍 Searching for points of interest...
+              </p>
+            ) : weather ? (
+              <p style={{ color: '#ff9800', fontSize: '13px' }}>
+                ⚠️ No points of interest found nearby. Try a major city or tourist area.
+              </p>
+            ) : null}
+          </div>
+        )}
+        
+        {weather && (
+          <div className="weather-card">
+            <div className="weather-header">
+              <div className="weather-main">
+                <img 
+                  src={`https://openweathermap.org/img/wn/${weather.icon}@2x.png`}
+                  alt={weather.description}
+                  className="weather-icon"
+                />
+                <div className="weather-temp">
+                  <h2>{weather.temp}°C</h2>
+                  <p className="weather-description">{weather.description}</p>
+                </div>
+              </div>
+              <div className="weather-location">
+                <p>{weather.city}</p>
+              </div>
+            </div>
+            <div className="weather-details">
+              <div className="weather-detail-item">
+                <span className="weather-label">Feels Like</span>
+                <span className="weather-value">{weather.feelsLike}°C</span>
+              </div>
+              <div className="weather-detail-item">
+                <span className="weather-label">Humidity</span>
+                <span className="weather-value">{weather.humidity}%</span>
+              </div>
+              <div className="weather-detail-item">
+                <span className="weather-label">Wind Speed</span>
+                <span className="weather-value">{weather.windSpeed} m/s</span>
+              </div>
+              <div className="weather-detail-item">
+                <span className="weather-label">Pressure</span>
+                <span className="weather-value">{weather.pressure} hPa</span>
+              </div>
+              <div className="weather-detail-item">
+                <span className="weather-label">Min/Max</span>
+                <span className="weather-value">{weather.tempMin}°C / {weather.tempMax}°C</span>
+              </div>
+            </div>
           </div>
         )}
         
