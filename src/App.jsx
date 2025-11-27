@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import Map from './components/Map';
 import SearchBar from './components/SearchBar';
+import TranslatorPopup from './components/TranslatorPopup';
 import './App.css';
 
 function App() {
@@ -356,6 +357,9 @@ function App() {
           </div>
         )}
       </div>
+      
+      {/* Translation Popup */}
+      <TranslatorPopup />
     </div>
   );
 }
